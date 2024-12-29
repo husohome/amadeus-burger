@@ -26,25 +26,36 @@ conda activate amadeus
 pip install -e .
 ```
 
-### 設定值覆寫機制 Settings Override Pattern
+### 設定與憑證 Settings and Credentials
 
-本專案採用三層設定值覆寫機制，優先順序由低至高：
+本專案採用兩種不同的設定方式：
 
-1. 全域設定 (最低優先)：
-```python
-from amadeus_burger import Settings
-Settings.llm = "gpt-4"
-```
+1. 設定值 (Settings)：
+   - 位於 `src/amadeus_burger/constants/settings.py`
+   - 包含所有可調整的設定，如 LLM 參數、資料庫設定等
+   - 支援三層覆寫機制：
+     ```python
+     # 全域設定 (最低優先)
+     from amadeus_burger import Settings
+     Settings.llm = "gpt-4"
+     
+     # 類別初始化 (中優先)
+     agent = Agent(llm="claude-3")
+     
+     # 函數呼叫 (最高優先)
+     result = agent.generate(llm="gpt-4-turbo")
+     ```
 
-2. 類別初始化 (中優先)：
-```python
-agent = Agent(llm="claude-3")  # 覆寫此實例的 llm
-```
-
-3. 函數呼叫 (最高優先)：
-```python
-result = agent.generate(llm="gpt-4-turbo")  # 僅此次呼叫使用
-```
+2. 憑證 (Credentials)：
+   - 存放於 `.env` 檔案（不納入版本控制）
+   - 僅包含敏感資訊，如 API 金鑰、資料庫密碼等
+   - 請參考 `.env.example` 建立自己的 `.env` 檔案：
+     ```bash
+     # API Keys
+     OPENAI_API_KEY=your-api-key-here
+     ANTHROPIC_API_KEY=your-api-key-here
+     TAVILY_API_KEY=your-api-key-here
+     ```
 
 ### 目前開發者 Current Developers (照字母順序)
 
@@ -87,3 +98,5 @@ db = SQLiteClient(connection_string="custom.db")
 # 查詢資料
 results = db.query("status = :status", {"status": "完成"})
 ```
+
+

@@ -1,5 +1,7 @@
 from typing import Optional, Any
+from pathlib import Path
 from pydantic import BaseModel, Field
+from amadeus_burger.constants.literals import DBClientTypes, CompressorTypes
 
 class SQLiteSettings(BaseModel):
     """SQLite-specific settings"""
@@ -19,6 +21,16 @@ class SQLiteSettings(BaseModel):
     class Config:
         validate_assignment = True
         arbitrary_types_allowed = True
+
+class ExperimentRunnerSettings(BaseModel):
+    """Settings for experiment runner behavior"""
+    snapshot_interval: float | None = Field(default=5.0, description="How often to auto-snapshot (in seconds), None for manual only")
+    max_snapshots: int = Field(default=1000, description="Max snapshots to keep per experiment")
+    snapshot_on_metrics: bool = Field(default=True, description="Whether to snapshot on every metric record")
+    collection_name: str = Field(default="experiments", description="Default collection name for experiments")
+    compressor_type: CompressorTypes | None = Field(default=None, description="Type of snapshot compressor to use (json/binary/None)")
+    db_client: DBClientTypes = Field(default="sqlite", description="Database client")
+    db_client_params: dict[str, Any] = Field(default={}, description="Database client parameters")
 
 class _Settings(BaseModel):
     """Global settings for amadeus-burger"""
@@ -53,13 +65,9 @@ class _Settings(BaseModel):
     )
     
     # Experiment settings
-    experiment_name: str = Field(
-        default="default",
-        description="Current experiment name"
-    )
-    experiment_tags: list[str] = Field(
-        default_factory=list,
-        description="Tags for the current experiment"
+    experiment_runner: ExperimentRunnerSettings = Field(
+        default_factory=ExperimentRunnerSettings,
+        description="Experiment runner settings"
     )
     
     # Debug settings
@@ -71,9 +79,12 @@ class _Settings(BaseModel):
         default="INFO",
         description="Logging level"
     )
+    
+    # Add experiment runner settings
+    experiment_runner: ExperimentRunnerSettings = ExperimentRunnerSettings()
 
     class Config:
         validate_assignment = True
         arbitrary_types_allowed = True
 
-Settings = _Settings() 
+Settings = _Settings()

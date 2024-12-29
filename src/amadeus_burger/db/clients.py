@@ -5,6 +5,7 @@ from typing import Optional
 from base import DBClient
 from schemas import QueryResult
 from amadeus_burger import Settings
+from amadeus_burger.constants.literals import DBClientTypes
 
 class SQLiteClient(DBClient):
     def __init__(self, connection_string: str | None = None):
@@ -91,3 +92,15 @@ class JSONFileClient(DBClient):
 class MongoClient(DBClient):
     # Implementation here
     pass
+
+# write a function to get client 
+def get_client(db_client: DBClientTypes | None = None, **kwargs) -> DBClient:
+    db_client = db_client or Settings.experiment_runner.db_client
+    if db_client == "sqlite":
+        return SQLiteClient(**kwargs)
+    elif db_client == "json":
+        return JSONFileClient(**kwargs)
+    elif db_client == "mongo":
+        return MongoClient(**kwargs)
+    else:
+        raise ValueError(f"Invalid database client: {db_client}")
