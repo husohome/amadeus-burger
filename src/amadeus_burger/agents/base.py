@@ -1,4 +1,8 @@
-from typing import Any, TypeVar
+from typing import Any, Sequence
+from datetime import datetime
+from langchain_core.messages import BaseMessage
+from typing_extensions import TypedDict
+
 from amadeus_burger.constants.settings import Settings
 
 class AgentPipeline:
@@ -15,13 +19,3 @@ class AgentPipeline:
     def get_config(self) -> dict[str, Any]:
         raise NotImplementedError
 
-def get_pipeline(pipeline_type: str, **kwargs) -> AgentPipeline:
-    """Factory method for getting agent pipelines"""
-    if pipeline_type == "chat":
-        from .chat import ChatPipeline
-        return ChatPipeline(**kwargs)
-    elif pipeline_type == "researcher":
-        from .researcher import ResearcherPipeline
-        return ResearcherPipeline(**kwargs)
-    # etc...
-    raise ValueError(f"Unknown pipeline type: {pipeline_type}") 

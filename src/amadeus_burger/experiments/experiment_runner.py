@@ -10,9 +10,11 @@ import time
 
 from amadeus_burger import Settings
 from amadeus_burger.db import DBClient, get_client
-from amadeus_burger.db.schemas import ExperimentRecord, Snapshot, S
-from amadeus_burger.constants.literals import CompressorTypes
+from amadeus_burger.db.schemas import ExperimentRecord, Snapshot, S, Metric
+from amadeus_burger.constants.literals import CompressorTypes, MetricTypes
 from amadeus_burger.agents.base import AgentPipeline
+from amadeus_burger.experiments.snapshot_compressors import get_compressor
+from amadeus_burger.experiments.metrics import get_metric
 
 class ExperimentRunner(Generic[S]):
     """Tracks and persists agent pipeline experiment states"""
@@ -27,30 +29,65 @@ class ExperimentRunner(Generic[S]):
         snapshot_on_metrics: bool | None = None,
         collection_name: str | None = None,
         snapshot_compressor: CompressorTypes | None = None,
+        metrics: list[MetricTypes] | None = None,
     ):
         self.pipeline = pipeline
         db_client = db_client or Settings.experiment_runner.db_client
         db_client_params = db_client_params or Settings.experiment_runner.db_client_params
-        self.db_client: DBClient = db_client or get_client(
-            Settings.experiment_runner.db_client, 
+        self._db_client: DBClient = get_client(
+            db_client, 
             **(db_client_params or {})
         )
 
         self._snapshot_thread: threading.Thread | None = None
         self._current_experiment: ExperimentRecord[S] | None = None
-        self._snapshot_thread: threading.Thread | None = None
         self._should_stop = threading.Event()
-
-        # make current experiment a property
-        self.current_experiment: ExperimentRecord[S] | None = self._current_experiment
 
         self._snapshot_interval = snapshot_interval
         self._max_snapshots = max_snapshots
         self._snapshot_on_metrics = snapshot_on_metrics
         self._collection_name = collection_name
         self._snapshot_compressor = snapshot_compressor
+        self._metrics = metrics
+    
+    @property
+    def metrics(self) -> list[MetricTypes]:
+        """Get current metrics to track"""
+        return self._metrics or Settings.experiment_runner.metrics
+    
+    @metrics.setter
+    def metrics(self, value: list[MetricTypes]) -> None:
+        """Set metrics to track"""
+        self._metrics = value
+    
+    def calculate_metrics(self, state: S) -> list[Metric]:
+        """Calculate all registered metrics for a state"""
+        metrics = []
+        for metric_type in self.metrics:
+            metric = get_metric(metric_type)  # Creates a new metric instance
+            metric.calculate(state)  # Calculates and sets the value
+            metrics.append(metric)
+        return metrics
+    
+    def _record_metrics(self) -> None:
+        """Record all metrics for current state"""
+        if not self._current_experiment:
+            return
+            
+        state = self.pipeline.get_current_state()
+        new_metrics = self.calculate_metrics(state)
+        
+        # Add new metrics to experiment
+        self._current_experiment.metrics.extend(new_metrics)
+        
+        # Save to database
+        self.db_client.upsert(
+            data={"metrics": [m.model_dump() for m in self._current_experiment.metrics]},
+            query_str="id = :id",
+            params={"id": self._current_experiment.id}
+        )
 
-    # use the property pattern for all settings
+    # Use the property pattern for all settings to allow dynamic updates
     @property
     def snapshot_interval(self) -> float | None:
         return self._snapshot_interval or Settings.experiment_runner.snapshot_interval
@@ -66,7 +103,6 @@ class ExperimentRunner(Generic[S]):
     @property
     def collection_name(self) -> str:
         return self._collection_name or Settings.experiment_runner.collection_name
-    
     
     @property
     def db_client(self) -> DBClient:
@@ -99,8 +135,12 @@ class ExperimentRunner(Generic[S]):
             snapshot_on_metrics: bool = None,
             collection_name: str = None,
             compress_snapshots: bool = None,
+            metrics: list[MetricTypes] | None = None,
         ) -> ExperimentRecord[S]:
         """Start tracking a new experiment"""
+        if metrics is not None:
+            self.metrics = metrics
+            
         snapshot_interval = snapshot_interval or self.snapshot_interval
         max_snapshots = max_snapshots or self.max_snapshots
         snapshot_on_metrics = snapshot_on_metrics or self.snapshot_on_metrics
@@ -117,11 +157,14 @@ class ExperimentRunner(Generic[S]):
             end_time=None,
             pipeline_type=self.pipeline.__class__.__name__,
             pipeline_config=self.pipeline.get_config(),
-            metrics={},
+            metrics=[],  # Initialize empty list for metrics
             snapshots=[],
             status="running",
             initial_input=initial_input
         )
+        
+        # Record initial metrics
+        self._record_metrics()
         
         # Start automatic snapshots if interval is set
         if snapshot_interval:
@@ -133,15 +176,14 @@ class ExperimentRunner(Generic[S]):
             self._snapshot_thread.start()
 
         # Save initial state
-        self.db_client.save(
-            collection=collection_name,
-            data=self._current_experiment
-        )
+        self.db_client.upsert(data=self._current_experiment.model_dump())
         return self._current_experiment
 
-
-    # this should be directly using the pipeline state and should not be require a state argument
-    def take_snapshot(self, collection_name: str = None, snapshot_compressor: CompressorTypes | None = None) -> None:
+    def take_snapshot(
+            self,
+            collection_name: str = None,
+            snapshot_compressor: CompressorTypes | None = None
+        ) -> None:
         """Record current state with proper typing"""
         if not self._current_experiment:
             raise RuntimeError("No experiment in progress")
@@ -153,45 +195,46 @@ class ExperimentRunner(Generic[S]):
         if len(self._current_experiment.snapshots) >= self.max_snapshots:
             return  # Skip if max snapshots reached
         
-        snapshot = Snapshot[S](state=state)
+        # Calculate metrics for this snapshot
+        snapshot_metrics = self.calculate_metrics(state)
         
-        if compress_snapshots:
-            # Implement compression logic here
-            pass
-            
-        self._current_experiment["snapshots"].append(snapshot)
-        self.db_client.update(
-            collection=Settings.experiment_runner.collection_name,
-            query={"id": self._current_experiment["id"]},
-            update={"snapshots": self._current_experiment["snapshots"]}
+        snapshot = Snapshot[S](
+            state=state,
+            timestamp=datetime.utcnow(),
+            metrics=snapshot_metrics  # Add metrics to snapshot
+        )
+        
+        if snapshot_compressor is not None:
+            compressor = get_compressor(snapshot_compressor)
+            snapshot.compressed_data = compressor.compress(snapshot)
+            snapshot.compression_type = snapshot_compressor
+            # Clear uncompressed state to save space
+            snapshot.state = None
+        
+        self._current_experiment.snapshots.append(snapshot)
+        
+        # only keeping the latest metrics for experiment record
+        self._current_experiment.metrics = snapshot_metrics
+        
+        # Update experiment with new snapshot and metrics
+        self.db_client.upsert(
+            data={
+                "snapshots": [s.model_dump() for s in self._current_experiment.snapshots],
+                "metrics": [m.model_dump() for m in self._current_experiment.metrics]
+            },
+            query_str="id = :id",
+            params={"id": self._current_experiment.id}
         )
 
     def _auto_snapshot_loop(self) -> None:
         """Background thread for taking automatic snapshots"""
         while not self._should_stop.is_set():
-            if self._current_experiment and Settings.experiment_runner.snapshot_interval:
+            if self._current_experiment and self.snapshot_interval:
                 try:
-                    state = self.pipeline.get_current_state()
-                    self.take_snapshot(state)
+                    self.take_snapshot()
                 except Exception as e:
                     print(f"Error taking snapshot: {e}")  # TODO: proper logging
-                time.sleep(Settings.experiment_runner.snapshot_interval)
-
-    def record_metric(self, name: str, value: Any) -> None:
-        """Record a metric and optionally snapshot"""
-        if not self._current_experiment:
-            raise RuntimeError("No experiment in progress")
-            
-        self._current_experiment["metrics"][name] = value
-        self.db_client.update(
-            collection=Settings.experiment_runner.collection_name,
-            query={"id": self._current_experiment["id"]},
-            update={"metrics": self._current_experiment["metrics"]}
-        )
-
-        if Settings.experiment_runner.snapshot_on_metrics:
-            state = self.pipeline.get_current_state()
-            self.take_snapshot(state)
+                time.sleep(self.snapshot_interval)
 
     def end(self, status: str = "completed") -> ExperimentRecord[S]:
         """End experiment tracking"""
@@ -203,22 +246,94 @@ class ExperimentRunner(Generic[S]):
             self._snapshot_thread.join()
             self._snapshot_thread = None
 
-        self._current_experiment["status"] = status
-        self._current_experiment["end_time"] = datetime.utcnow()
+        self._current_experiment.status = status
+        self._current_experiment.end_time = datetime.utcnow()
+        
+        # Record final metrics
+        self._record_metrics()
         
         # Take final snapshot
         try:
-            final_state = self.pipeline.get_current_state()
-            self.take_snapshot(final_state)
+            self.take_snapshot()
         except Exception:
             pass  # Don't fail if final snapshot fails
             
-        self.db_client.update(
-            collection=Settings.experiment_runner.collection_name,
-            query={"id": self._current_experiment["id"]},
-            update=self._current_experiment
+        # Update final state
+        self.db_client.upsert(
+            data={
+                "status": status,
+                "end_time": self._current_experiment.end_time,
+                "metrics": self._current_experiment.metrics
+            },
+            query_str="id = :id",
+            params={"id": self._current_experiment.id}
         )
         
         result = self._current_experiment
         self._current_experiment = None
         return result
+
+if __name__ == "__main__":
+    from amadeus_burger.agents.base import get_pipeline
+    from amadeus_burger.constants.settings import Settings
+    from amadeus_burger.constants.literals import PipelineTypes, MetricTypes
+    import time
+    
+    # Example 1: Basic usage with default metrics
+    pipeline = get_pipeline(PipelineTypes.STRUCTURED_LEARNING)
+    runner = ExperimentRunner(
+        pipeline=pipeline,
+        metrics=[MetricTypes.NUM_KNOWLEDGE_NODES, MetricTypes.NUM_KNOWLEDGE_EDGES]
+    )
+    
+    experiment = runner.start(
+        experiment_name="結構化學習實驗_1",  # Structured Learning Experiment 1
+        initial_input="學習Python的async/await概念"  # Learn Python async/await concepts
+    )
+    
+    # Each snapshot will calculate and store metrics
+    time.sleep(2)  # Agent doing work...
+    runner.take_snapshot()
+    
+    # Print latest metrics
+    for metric in experiment.metrics:
+        print(f"{metric.name}: {metric.value} ({metric.timestamp})")
+    
+    time.sleep(2)  # More work...
+    runner.take_snapshot()
+    
+    # Print metrics from all snapshots
+    for snapshot in experiment.snapshots:
+        print(f"\nSnapshot at {snapshot.timestamp}:")
+        for metric in snapshot.metrics:
+            print(f"  {metric.name}: {metric.value}")
+    
+    final_record = runner.end()
+    print(f"\n實驗 {final_record.id} 完成")
+    print(f"快照數量: {len(final_record.snapshots)}")
+    print("最終指標:")
+    for metric in final_record.metrics:
+        print(f"  {metric.name}: {metric.value}")
+    
+    # Example 2: Automatic snapshots with perplexity tracking
+    pipeline = get_pipeline(PipelineTypes.ADAPTIVE_LEARNING)
+    runner = ExperimentRunner(
+        pipeline=pipeline,
+        snapshot_interval=1.0,  # Take snapshot every second
+        max_snapshots=5,
+        metrics=[MetricTypes.AVERAGE_PERPLEXITY]  # Only track perplexity
+    )
+    
+    experiment = runner.start(
+        experiment_name="自適應學習實驗_1",  # Adaptive Learning Experiment 1
+        initial_input="學習Python裝飾器的概念"  # Learn Python decorator concepts
+    )
+    
+    # Let automatic snapshots record metrics
+    time.sleep(3)  # Will take 3 snapshots with metrics
+    
+    final_record = runner.end()
+    print(f"\n實驗 {final_record.id} 完成")
+    print(f"快照數量: {len(final_record.snapshots)}")
+    print("最終困惑度:", final_record.metrics[0].value)
+

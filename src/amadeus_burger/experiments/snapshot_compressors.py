@@ -34,7 +34,6 @@ class BinaryCompressor(SnapshotCompressor):
 def get_compressor(compressor_type: CompressorType) -> SnapshotCompressor:
     if isinstance(compressor_type, str):
         compressor_type = CompressorType(compressor_type)
-        
     match compressor_type:
         case CompressorType.JSON:
             return JsonCompressor()
