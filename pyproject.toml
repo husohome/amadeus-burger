@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "amadeus-burger"
+version = "0.1.0"
+description = "An experimental AGI prototype for autonomous knowledge gathering"
+authors = [
+    "Nick",
+    "Chris",
+    "Chryth",
+    "Sam",
+    "Tao"
+]
+readme = "README.md"
+license = "MIT"
+packages = [{include = "amadeus_burger", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+langgraph = "^0.0.10"
+langchain = ">=0.1.0"
+networkx = "^3.2"
+pydantic = ">=2.0.0,<3.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+ruff = "^0.1.9"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312" 
