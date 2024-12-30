@@ -278,10 +278,11 @@ if __name__ == "__main__":
     from amadeus_burger.constants.settings import Settings
     from amadeus_burger.constants.literals import PipelineTypes, MetricTypes
     import time
+    from typing import TypedDict
     
     # Example 1: Basic usage with default metrics
     pipeline = get_pipeline(PipelineTypes.STRUCTURED_LEARNING)
-    runner = ExperimentRunner(
+    runner = ExperimentRunner[TypedDict](
         pipeline=pipeline,
         metrics=[MetricTypes.NUM_KNOWLEDGE_NODES, MetricTypes.NUM_KNOWLEDGE_EDGES]
     )
