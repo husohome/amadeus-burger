@@ -68,31 +68,20 @@ amadeus_burger/
 from amadeus_burger import Settings
 from amadeus_burger.experiments import ExperimentRunner
 from amadeus_burger.db import SQLiteClient
+from typing import TypedDict
 
 # 設定 database
 Settings.sqlite.connection_string = "experiments.db"
 db = SQLiteClient()
 
 # 建立 experiment runner
-runner = ExperimentRunner(
+runner = ExperimentRunner[TypedDict](
     name="Knowledge Graph Experiment",
     description="Testing knowledge expansion",
-    metrics=["node_count", "edge_count"],  # metrics to track
-    db_client=db
 )
 
 # 開始實驗
-with runner:
-    # 實驗邏輯
-    for step in range(10):
-        # ... experiment logic ...
-      
-        # 每個步驟都會自動記錄 metrics
-        runner.step()  # auto-calculate and store all metrics
-      
-        # 也可以手動記錄額外的 metrics
-        runner.record_metric("custom_metric", value=42)
-
+runner.start()
 # 實驗結束時會自動儲存最終結果
 ```
 
