@@ -1,7 +1,7 @@
 from typing import Optional, Any
 from pathlib import Path
 from pydantic import BaseModel, Field
-from amadeus_burger.constants.literals import DBClientTypes, CompressorTypes, MetricTypes
+from amadeus_burger.constants.enums import *
 
 class SQLiteSettings(BaseModel):
     """SQLite-specific settings"""
@@ -28,10 +28,10 @@ class ExperimentRunnerSettings(BaseModel):
     max_snapshots: int = Field(default=1000, description="Max snapshots to keep per experiment")
     snapshot_on_metrics: bool = Field(default=True, description="Whether to snapshot on every metric record")
     collection_name: str = Field(default="experiments", description="Default collection name for experiments")
-    compressor_type: CompressorTypes | None = Field(default=None, description="Type of snapshot compressor to use (json/binary/None)")
-    db_client: DBClientTypes = Field(default="sqlite", description="Database client")
-    db_client_params: dict[str, Any] = Field(default={}, description="Database client parameters")
-    metrics: list[MetricTypes] = Field(
+    compressor_type: CompressorType | None = Field(default=None, description="Type of snapshot compressor to use (json/binary/None)")
+    db_client: DBClientType = Field(default="sqlite", description="Database client")
+    db_client_params: dict[str, Any] = Field(default_factory=dict, description="Database client parameters")
+    metrics: list[MetricType] = Field(
         default=["知識節點數量", "知識連結數量"],
         description="Default metrics to track in experiments"
     )
@@ -83,9 +83,6 @@ class _Settings(BaseModel):
         default="INFO",
         description="Logging level"
     )
-    
-    # Add experiment runner settings
-    experiment_runner: ExperimentRunnerSettings = ExperimentRunnerSettings()
     
     class Config:
         validate_assignment = True

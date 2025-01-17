@@ -2,9 +2,8 @@ import sqlite3
 import json
 import uuid
 from typing import Optional
-from schemas import QueryResult
-from amadeus_burger import Settings
-from amadeus_burger.constants.literals import DBClientTypes
+from amadeus_burger.db.schemas import QueryResult
+from amadeus_burger.constants import Settings, DBClientType
 from abc import ABC, abstractmethod
 
 class DBClient(ABC):
@@ -277,15 +276,16 @@ class Neo4jClient(DBClient):
         self._driver.close()
 
 # write a function to get client 
-def get_client(db_client: DBClientTypes | None = None, **kwargs) -> DBClient:
+def get_client(db_client: DBClientType | None = None, **kwargs) -> DBClient:
     db_client = db_client or Settings.experiment_runner.db_client
-    if db_client == "sqlite":
+    if db_client == DBClientType.SQLITE:
         return SQLiteClient(**kwargs)
-    elif db_client == "json":
+    elif db_client == DBClientType.JSON:
         return JSONFileClient(**kwargs)
-    elif db_client == "mongo":
+    elif db_client == DBClientType.MONGO:
         return MongoClient(**kwargs)
-    elif db_client == "neo4j":
+    elif db_client == DBClientType.NEO4J:
         return Neo4jClient(**kwargs)
     else:
         raise ValueError(f"Invalid database client: {db_client}")
+

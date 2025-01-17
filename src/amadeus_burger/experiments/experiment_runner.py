@@ -3,18 +3,21 @@ ExperimentRunner for tracking and persisting agent experiment states.
 Designed to work with LangGraph-based agent pipelines.
 """
 from typing import TypeVar, Generic, Any
-from datetime import datetime
+from datetime import datetime, UTC
 from uuid import uuid4
 import threading
 import time
 
-from amadeus_burger import Settings
+from amadeus_burger.constants.settings import Settings
 from amadeus_burger.db import DBClient, get_client
 from amadeus_burger.db.schemas import ExperimentRecord, Snapshot, S, Metric
-from amadeus_burger.constants.literals import CompressorTypes, MetricTypes
-from amadeus_burger.agents.base import AgentPipeline
+from amadeus_burger.constants.enums import CompressorType, MetricType
+from amadeus_burger.agents import AgentPipeline
 from amadeus_burger.experiments.snapshot_compressors import get_compressor
 from amadeus_burger.experiments.metrics import get_metric
+from amadeus_burger.constants.enums import PipelineType, MetricType
+
+
 
 class ExperimentRunner(Generic[S]):
     """Tracks and persists agent pipeline experiment states"""
@@ -28,8 +31,8 @@ class ExperimentRunner(Generic[S]):
         max_snapshots: int | None = None,
         snapshot_on_metrics: bool | None = None,
         collection_name: str | None = None,
-        snapshot_compressor: CompressorTypes | None = None,
-        metrics: list[MetricTypes] | None = None,
+        snapshot_compressor: CompressorType | None = None,
+        metrics: list[MetricType] | None = None,
     ):
         self.pipeline = pipeline
         db_client = db_client or Settings.experiment_runner.db_client
@@ -51,12 +54,12 @@ class ExperimentRunner(Generic[S]):
         self._metrics = metrics
     
     @property
-    def metrics(self) -> list[MetricTypes]:
+    def metrics(self) -> list[MetricType]:
         """Get current metrics to track"""
         return self._metrics or Settings.experiment_runner.metrics
     
     @metrics.setter
-    def metrics(self, value: list[MetricTypes]) -> None:
+    def metrics(self, value: list[MetricType]) -> None:
         """Set metrics to track"""
         self._metrics = value
     
@@ -117,7 +120,7 @@ class ExperimentRunner(Generic[S]):
         return self._current_experiment
     
     @property
-    def snapshot_compressor(self) -> CompressorTypes | None:
+    def snapshot_compressor(self) -> CompressorType | None:
         return self._snapshot_compressor or Settings.experiment_runner.compressor_type
 
     def update_current_experiment(self, update: dict[str, Any]) -> None:
@@ -135,7 +138,7 @@ class ExperimentRunner(Generic[S]):
             snapshot_on_metrics: bool = None,
             collection_name: str = None,
             compress_snapshots: bool = None,
-            metrics: list[MetricTypes] | None = None,
+            metrics: list[MetricType] | None = None,
         ) -> ExperimentRecord[S]:
         """Start tracking a new experiment"""
         if metrics is not None:
@@ -153,7 +156,7 @@ class ExperimentRunner(Generic[S]):
         self._current_experiment = ExperimentRecord[S](
             id=str(uuid4()),
             name=experiment_name,
-            start_time=datetime.utcnow(),
+            start_time=datetime.now(UTC),
             end_time=None,
             pipeline_type=self.pipeline.__class__.__name__,
             pipeline_config=self.pipeline.get_config(),
@@ -182,7 +185,7 @@ class ExperimentRunner(Generic[S]):
     def take_snapshot(
             self,
             collection_name: str = None,
-            snapshot_compressor: CompressorTypes | None = None
+            snapshot_compressor: CompressorType | None = None
         ) -> None:
         """Record current state with proper typing"""
         if not self._current_experiment:
@@ -200,7 +203,7 @@ class ExperimentRunner(Generic[S]):
         
         snapshot = Snapshot[S](
             state=state,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             metrics=snapshot_metrics  # Add metrics to snapshot
         )
         
@@ -247,7 +250,7 @@ class ExperimentRunner(Generic[S]):
             self._snapshot_thread = None
 
         self._current_experiment.status = status
-        self._current_experiment.end_time = datetime.utcnow()
+        self._current_experiment.end_time = datetime.now(UTC)
         
         # Record final metrics
         self._record_metrics()
@@ -274,17 +277,17 @@ class ExperimentRunner(Generic[S]):
         return result
 
 if __name__ == "__main__":
-    from amadeus_burger.agents.base import get_pipeline
+    from amadeus_burger.agents import get_pipeline
     from amadeus_burger.constants.settings import Settings
-    from amadeus_burger.constants.literals import PipelineTypes, MetricTypes
+    from amadeus_burger.constants.enums import PipelineType, MetricType
     import time
     from typing import TypedDict
     
     # Example 1: Basic usage with default metrics
-    pipeline = get_pipeline(PipelineTypes.STRUCTURED_LEARNING)
+    pipeline = get_pipeline(PipelineType.STRUCTURED_LEARNING)
     runner = ExperimentRunner[TypedDict](
         pipeline=pipeline,
-        metrics=[MetricTypes.NUM_KNOWLEDGE_NODES, MetricTypes.NUM_KNOWLEDGE_EDGES]
+        metrics=[MetricType.NUM_KNOWLEDGE_NODES, MetricType.NUM_KNOWLEDGE_EDGES]
     )
     
     experiment = runner.start(
@@ -317,12 +320,12 @@ if __name__ == "__main__":
         print(f"  {metric.name}: {metric.value}")
     
     # Example 2: Automatic snapshots with perplexity tracking
-    pipeline = get_pipeline(PipelineTypes.ADAPTIVE_LEARNING)
+    pipeline = get_pipeline(PipelineType.ADAPTIVE_LEARNING)
     runner = ExperimentRunner(
         pipeline=pipeline,
         snapshot_interval=1.0,  # Take snapshot every second
         max_snapshots=5,
-        metrics=[MetricTypes.AVERAGE_PERPLEXITY]  # Only track perplexity
+        metrics=[MetricType.AVERAGE_PERPLEXITY]  # Only track perplexity
     )
     
     experiment = runner.start(
@@ -334,7 +337,8 @@ if __name__ == "__main__":
     time.sleep(3)  # Will take 3 snapshots with metrics
     
     final_record = runner.end()
-    print(f"\n實驗 {final_record.id} 完成")
-    print(f"快照數量: {len(final_record.snapshots)}")
-    print("最終困惑度:", final_record.metrics[0].value)
+    # print(f"\n實驗 {final_record.id} 完成")
+    # print(f"快照數量: {len(final_record.snapshots)}")
+    # print("最終困惑度:", final_record.metrics[0].value)
+    
 

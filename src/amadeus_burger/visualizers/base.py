@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Any, TypeVar, Generic
 from typing_extensions import TypedDict
 
-from amadeus_burger.agents.base import AgentState
+from amadeus_burger.db.schemas import S
 
 # Type for visualization configuration
 class VisualizerConfig(TypedDict):
@@ -32,7 +32,7 @@ class Visualizer(ABC, Generic[V]):
         )
     
     @abstractmethod
-    def process_data(self, state: AgentState) -> V:
+    def process_data(self, state: S) -> V:
         """Process agent state into visualization-ready data
         
         Args:
@@ -65,7 +65,7 @@ class Visualizer(ABC, Generic[V]):
         """
         pass
     
-    def visualize(self, state: AgentState) -> Any:
+    def visualize(self, state: S) -> Any:
         """Process and render visualization in one step
         
         Args:

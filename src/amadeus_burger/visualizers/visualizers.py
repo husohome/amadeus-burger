@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from networkx.drawing.layout import spring_layout
 
-from amadeus_burger.agents.base import AgentState
-from amadeus_burger.constants.literals import VisualizerTypes
+from amadeus_burger.db.schemas import S
+from amadeus_burger.constants.enums import VisualizerTypes
 from .base import Visualizer, VisualizerConfig
 
 # Type aliases for processed data
@@ -20,7 +20,7 @@ TopicNetworkData = nx.Graph
 class KnowledgeGraphVisualizer(Visualizer[KnowledgeGraphData]):
     """Visualizes knowledge as an interactive graph"""
     
-    def process_data(self, state: AgentState) -> KnowledgeGraphData:
+    def process_data(self, state: S) -> KnowledgeGraphData:
         """Convert knowledge base to graph structure"""
         G = nx.Graph()
         node_attrs = {}
@@ -103,7 +103,7 @@ class KnowledgeGraphVisualizer(Visualizer[KnowledgeGraphData]):
 class LearningProgressVisualizer(Visualizer[LearningProgressData]):
     """Visualizes learning progress over time"""
     
-    def process_data(self, state: AgentState) -> LearningProgressData:
+    def process_data(self, state: S) -> LearningProgressData:
         """Extract learning progress metrics"""
         quiz_results = state.get("quiz_results", [])
         return [

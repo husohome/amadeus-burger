@@ -1,18 +1,70 @@
 """
 LangGraph-based agent pipeline implementations for knowledge learning.
 """
-from typing import Any, Literal, TypedDict, NotRequired
-from datetime import datetime
+from typing import Any, Literal, TypedDict, NotRequired, Sequence
+from datetime import datetime, UTC
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langgraph.graph import END, StateGraph
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_community.tools.wikipedia import WikipediaQueryRun
-from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
 
-from .base import AgentPipeline, AgentState
-from amadeus_burger.constants.literals import PipelineTypes
+from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
+from langchain_community.tools import WikipediaQueryRun
+from amadeus_burger.constants.enums import PipelineType
+from amadeus_burger.constants.settings import Settings
+from langchain.tools import BaseTool
+import requests
+import os
+
+class PerplexitySearchTool(BaseTool):
+    """Tool that queries Perplexity AI API"""
+    name: str = "perplexity_search"
+    description: str = "Search for information using Perplexity AI"
+
+    def _run(self, query: str) -> str:
+        headers = {
+            "Authorization": f"Bearer {os.getenv('PERPLEXITY_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "llama-3.1-sonar-small-128k-online",
+            "messages": [
+                {"role": "system", "content": "Be precise and concise."},
+                {"role": "user", "content": query}
+            ],
+            "temperature": 0.2,
+            "top_p": 0.9
+        }
+        
+        response = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers=headers,
+            json=data
+        )
+        response.raise_for_status()
+        
+        return response.json()["choices"][0]["message"]["content"]
+
+    def _arun(self, query: str) -> str:
+        raise NotImplementedError("Async not implemented")
+
+class AgentPipeline:
+    def __init__(self, llm: str | None = None):
+        self.llm = llm or Settings.llm
+        
+    def get_current_state(self) -> dict[str, Any]:
+        """Get current state of the pipeline"""
+        raise NotImplementedError
+        
+    def run(self, initial_input: Any) -> Any:
+        raise NotImplementedError
+        
+    def get_config(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+
 
 class ExampleAgentState(TypedDict):
     """Example agent state with common fields and proper typing"""
@@ -46,13 +98,13 @@ class StructuredLearningPipeline(AgentPipeline):
         self.planner = ChatOpenAI(model="gpt-4-turbo-preview")
         self.learner = ChatAnthropic(model="claude-3-haiku")
         self.tools = [
-            TavilySearchResults(max_results=3),
+            PerplexitySearchTool(),
             WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
         ]
         self.state = ExampleAgentState(
             messages=[],
             current_step="plan",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             status="running",
             iterations=0,
             tool_outputs=[],
@@ -140,7 +192,7 @@ class StructuredLearningPipeline(AgentPipeline):
             "llm": self.llm,
             "planner": "gpt-4-turbo-preview",
             "learner": "claude-3-haiku",
-            "tools": ["tavily_search", "wikipedia"]
+            "tools": ["perplexity_search", "wikipedia"]
         }
 
 class AdaptiveLearningPipeline(AgentPipeline):
@@ -152,7 +204,7 @@ class AdaptiveLearningPipeline(AgentPipeline):
         self.state = ExampleAgentState(
             messages=[],
             current_step="explore",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             status="running",
             iterations=0,
             tool_outputs=[],
@@ -233,7 +285,7 @@ class AdaptiveLearningPipeline(AgentPipeline):
         }
 
 
-def get_pipeline(pipeline_type: PipelineTypes | None = None, **kwargs) -> AgentPipeline:
+def get_pipeline(pipeline_type: PipelineType | None = None, **kwargs) -> AgentPipeline:
     """Factory method for getting agent pipelines
     
     Args:
@@ -250,9 +302,9 @@ def get_pipeline(pipeline_type: PipelineTypes | None = None, **kwargs) -> AgentP
     """
     pipeline_type = pipeline_type or "structured_learning"  # Default pipeline
     
-    pipelines: dict[PipelineTypes, type[AgentPipeline]] = {
-        "structured_learning": StructuredLearningPipeline,
-        "adaptive_learning": AdaptiveLearningPipeline
+    pipelines: dict[PipelineType, type[AgentPipeline]] = {
+        PipelineType.STRUCTURED_LEARNING: StructuredLearningPipeline,
+        PipelineType.ADAPTIVE_LEARNING: AdaptiveLearningPipeline
     }
     
     if pipeline_type not in pipelines:

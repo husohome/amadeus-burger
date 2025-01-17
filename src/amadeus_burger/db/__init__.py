@@ -9,22 +9,5 @@ Basic usage:
     print(f"Found {result.count} records")
 """
 
-# Re-export main interfaces
-from .schemas import QueryResult
-from .base import DBClient
-
-# Re-export all clients
-from .clients import SQLiteClient
-
-
-__all__ = [
-    # Core interfaces
-    "DBClient",
-    "QueryResult",
-    
-    # Available clients
-    "SQLiteClient",
-]
-
-# Optional: version info
-__version__ = "0.1.0"
+from amadeus_burger.db.schemas import *
+from amadeus_burger.db.clients import *
