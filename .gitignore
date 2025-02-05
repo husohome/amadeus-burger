@@ -20,6 +20,9 @@ wheels/
 .installed.cfg
 *.egg
 
+# MacOs
+.DS_Store
+
 # Environment
 .env
 .venv
