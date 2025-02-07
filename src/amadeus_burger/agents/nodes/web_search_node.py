@@ -2,9 +2,9 @@ import os
 import requests
 
 from langchain_core.messages import AIMessage
-from appstate.appstate import AppState
 
-def web_search_node(state: AppState) -> dict:
+
+def web_search_node(state) -> dict:
     """
     這個 Node 負責「外部搜尋」動作，使用 Perplexity API 查詢。
     並可把搜尋結果暫存到 state["knowledge_chunks"] 或 state["external_data"]。

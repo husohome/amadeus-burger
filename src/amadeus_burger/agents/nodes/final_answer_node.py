@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage
-from appstate.appstate import AppState
+
 
 
 @lru_cache(maxsize=1)
@@ -14,7 +14,7 @@ def get_final_answer_model() -> ChatOpenAI:
     return model
 
 
-def final_answer_node(state: AppState) -> dict:
+def final_answer_node(state) -> dict:
     """
     (2) FinalAnswer Node
 

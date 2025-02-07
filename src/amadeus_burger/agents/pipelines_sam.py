@@ -1,4 +1,4 @@
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, TypedDict
 from datetime import datetime
 
 from amadeus_burger.agents.base import AgentPipeline
@@ -15,12 +15,12 @@ from amadeus_burger.agents.tools.knowledge_base_fetcher_tool import knowledge_ba
 from amadeus_burger.agents.nodes.knowledge_base_node import knowledge_base_node
 from amadeus_burger.agents.nodes.final_answer_node import final_answer_node
 from amadeus_burger.agents.nodes.curiosity_node import curiosity_node
-from amadeus_burger.agents.nodes.novelty_evaluator_node import novelty_evaluator_node, route_novelty_evaluator
+from amadeus_burger.agents.nodes.novelty_evaluator_node import novelty_evaluator_node
 from amadeus_burger.agents.nodes.web_search_node import web_search_node
 from amadeus_burger.agents.nodes.knowledge_ingestion_node import knowledge_ingestion_node, route_knowledge_ingestion
 
 
-class AppState(Dict[str, Any]):
+class AppState(TypedDict):
     """
     應用狀態 (AppState)，作為 StateGraph 在各個 Node 中流轉的共享狀態。
 
@@ -39,6 +39,7 @@ class AppState(Dict[str, Any]):
     messages: List[AIMessage]
     question: str
     knowledge_chunks: List[str]
+    query_needed: bool
     subquestions: List[str]
     answer_text: str
     db_sql_logs: List[str]
@@ -47,7 +48,8 @@ class AppState(Dict[str, Any]):
     external_data: Optional[List[str]]
 
 
-def should_continue(state: AppState) -> str:
+# 
+def should_continue_search(state) -> str:
     """
     判斷是否繼續程序執行
 
@@ -65,6 +67,29 @@ def should_continue(state: AppState) -> str:
         return "end"
     return "continue"
 
+def is_subquestion_novel(state) -> bool:
+    """
+    如果子問題具有新奇性，則返回 True，否則返回 False。
+    """
+    if not state["novelty_test"]:
+        return "regenerate_subq"
+    return "end"
+
+def route_knowledge_base_node(state) -> str:
+    """
+    根據 state["query_needed"] 判斷：
+      - 如果為 True，則返回工具節點名稱 (例如 "knowledge_query_tool")，
+        讓後續流程執行資料庫查詢工具。
+      - 如果為 False，則返回下一個節點名稱 (例如 "final_answer_node")。
+
+    Returns:
+        str: 下一個節點的識別字串
+    """
+    if state.get("query_needed", False):
+        return "knowledge_query_tool"
+    return "final_answer_node"
+
+
 
 class CuriousityAgentPipeline(AgentPipeline):
     """
@@ -75,10 +100,11 @@ class CuriousityAgentPipeline(AgentPipeline):
         super().__init__(llm)
 
         # 初始化狀態
-        self.state: AppState = AppState(
+        self.state = AppState(
             messages=[],
             question="",
             knowledge_chunks=[],
+            query_needed=True,
             subquestions=[],
             answer_text="",
             db_sql_logs=[],
@@ -112,15 +138,15 @@ class CuriousityAgentPipeline(AgentPipeline):
         graph_builder.add_edge(START, "knowledge_base_node")
         graph_builder.add_conditional_edges(
             "knowledge_base_node",
-            should_continue,
+            should_continue_search,
             {"continue": "action", "end": "final_answer_node"},
         )
         graph_builder.add_edge("final_answer_node", "curiosity_node")
         graph_builder.add_edge("curiosity_node", "novelty_evaluator_node")
         graph_builder.add_conditional_edges(
             "novelty_evaluator_node",
-            route_novelty_evaluator,
-            {"curiosity_node": "curiosity_node", "web_search_node": "web_search_node"},
+            is_subquestion_novel,
+            {"regenerate_subq": "curiosity_node", "end": "web_search_node"},
         )
         graph_builder.add_edge("web_search_node", "knowledge_ingestion_node")
         graph_builder.add_conditional_edges(

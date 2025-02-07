@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage
-from appstate.appstate import AppState
+
 
 
 @lru_cache(maxsize=1)
@@ -15,7 +15,7 @@ def get_knowledge_ingestion_model() -> ChatOpenAI:
     return model
 
 
-def knowledge_ingestion_node(state: AppState) -> dict:
+def knowledge_ingestion_node(state) -> dict:
     """
     這個 Node 負責將外部搜尋來的資料進一步處理並存入 KnowledgeBase。
 
@@ -56,7 +56,7 @@ def knowledge_ingestion_node(state: AppState) -> dict:
     return {"messages": [msg]}
 
 
-def route_knowledge_ingestion(state: AppState) -> str:
+def route_knowledge_ingestion(state) -> str:
     """
     KnowledgeIngestion Node 路由
     - 資料整合完後，一般就結束流程

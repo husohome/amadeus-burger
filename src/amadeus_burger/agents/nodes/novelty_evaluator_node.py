@@ -1,8 +1,8 @@
 from langchain_core.messages import AIMessage
-from appstate.appstate import AppState
 
 
-def novelty_evaluator_node(state: AppState) -> dict:
+
+def novelty_evaluator_node(state) -> dict:
     """
     NoveltyEvaluator Node
 
@@ -35,7 +35,7 @@ def novelty_evaluator_node(state: AppState) -> dict:
     return {"messages": [msg]}
 
 
-def route_novelty_evaluator(state: AppState) -> str:
+def route_novelty_evaluator(state) -> str:
     """
     假設篩選完之後，一定要進下一個 Node，
     或若篩選結果為空就走某條分支...可在此判斷

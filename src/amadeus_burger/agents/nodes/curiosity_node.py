@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage
-from appstate.appstate import AppState
+
 
 
 @lru_cache(maxsize=1)
@@ -14,7 +14,7 @@ def get_curiosity_model() -> ChatOpenAI:
     return model
 
 
-def curiosity_node(state: AppState) -> dict:
+def curiosity_node(state) -> dict:
     """
     (3) Curiosity Node
 
@@ -57,7 +57,7 @@ def curiosity_node(state: AppState) -> dict:
     }
 
 
-def route_curiosity(state: AppState) -> str:
+def route_curiosity(state) -> str:
     """
     Curiosity Node 結束後，看 need_regenerate_subq:
     - True => 回到 curiosity_node

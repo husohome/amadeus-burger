@@ -5,7 +5,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage
 # from langchain_core.tools import ToolMessage
 
-from appstate.appstate import AppState
+
 from amadeus_burger.agents.tools.knowledge_base_fetcher_tool import knowledge_base_fetcher_tool
 
 @lru_cache(maxsize=1)
@@ -19,7 +19,7 @@ def get_knowledge_base_model() -> ChatOpenAI:
     return model
 
 
-def knowledge_base_node(state: AppState) -> dict:
+def knowledge_base_node(state) -> dict:
     """
     Graph Knowledge Node
 
