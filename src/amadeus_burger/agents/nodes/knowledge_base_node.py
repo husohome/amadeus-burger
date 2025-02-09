@@ -21,7 +21,7 @@ def get_knowledge_base_model() -> ChatOpenAI:
 
 def knowledge_base_node(state) -> dict:
     """
-    Graph Knowledge Node
+    (1) Graph Knowledge Node
 
     讓 LLM 根據 user question + 已有 knowledge_chunks，決定是否要生成 Cypher Query。
     呼叫 "knowledge_base_fetcher_tool" 來取得資料再整合。

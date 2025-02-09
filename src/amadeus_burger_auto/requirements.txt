@@ -1,0 +1,6 @@
+langgraph
+langchain_openai
+langchain_core
+langchain-community
+langsmith
+neo4j
