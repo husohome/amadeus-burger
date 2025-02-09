@@ -5,23 +5,28 @@ from amadeus_burger.agents.base import AgentPipeline
 from amadeus_burger.constants.settings import Settings
 
 # LangGraph 相關
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
+from langgraph.errors import GraphRecursionError
 
 # 原本的節點、工具、條件函數
-from amadeus_burger.agents.tools.knowledge_base_fetcher_tool import knowledge_base_fetcher_tool
-from amadeus_burger.agents.nodes.knowledge_base_node import knowledge_base_node
-from amadeus_burger.agents.nodes.final_answer_node import final_answer_node
-from amadeus_burger.agents.nodes.curiosity_node import curiosity_node
-from amadeus_burger.agents.nodes.novelty_evaluator_node import novelty_evaluator_node
-from amadeus_burger.agents.nodes.web_search_node import web_search_node
-from amadeus_burger.agents.nodes.knowledge_ingestion_node import knowledge_ingestion_node, route_knowledge_ingestion
+from amadeus_burger.agents.tools import knowledge_base_fetcher_tool
+from amadeus_burger.agents.nodes import (
+    knowledge_base_node,
+    final_answer_node,
+    curiosity_node,
+    novelty_evaluator_node, 
+    web_search_node,
+    knowledge_ingestion_node,
+    route_knowledge_ingestion
+)
 
 
 class AppState(TypedDict):
     """
+
     應用狀態 (AppState)，作為 StateGraph 在各個 Node 中流轉的共享狀態。
 
     欄位說明：
@@ -35,7 +40,11 @@ class AppState(TypedDict):
     - need_more_kb (bool)              : 是否需要繼續從 KnowledgeBase 抓取資料
     - need_regenerate_subq (bool)      : 是否需要重新生成子問題 (CuriosityNode)
     - external_data (Optional[List[str]]): 外部查詢的原始結果，可能尚未格式化
+    - thread_id (str)                  : 用於區分不同執行緒的唯一標識
+    - novelty_test (bool)              : 新奇性測試有沒有過
+    - loop_counter (int)                : 新增循環計數器
     """
+    thread_id: str
     messages: List[AIMessage]
     question: str
     knowledge_chunks: List[str]
@@ -46,6 +55,8 @@ class AppState(TypedDict):
     need_more_kb: bool
     need_regenerate_subq: bool
     external_data: Optional[List[str]]
+    novelty_test: bool
+    loop_counter: int
 
 
 # 
@@ -67,11 +78,11 @@ def should_continue_search(state) -> str:
         return "end"
     return "continue"
 
-def is_subquestion_novel(state) -> bool:
-    """
-    如果子問題具有新奇性，則返回 True，否則返回 False。
-    """
-    if not state["novelty_test"]:
+def is_subquestion_novel(state) -> str:
+    """添加循環終止條件"""
+    if state.get("loop_counter", 0) >= 5:  # 最大循環5次
+        return "end"
+    if not state.get("novelty_test", False):
         return "regenerate_subq"
     return "end"
 
@@ -99,9 +110,15 @@ class CuriousityAgentPipeline(AgentPipeline):
     def __init__(self, llm: str | None = None):
         super().__init__(llm)
 
-        # 初始化狀態
+        # 初始化狀態時加入 thread_id
         self.state = AppState(
-            messages=[],
+            thread_id="main_thread",
+            messages=[
+                HumanMessage(
+                    content="I need to learn about DevOps practices and tools. Can you help me understand the basics of CI/CD, containerization, and infrastructure as code?",
+                    name="user",
+                ) for _ in range(1)
+            ],
             question="",
             knowledge_chunks=[],
             query_needed=True,
@@ -111,9 +128,11 @@ class CuriousityAgentPipeline(AgentPipeline):
             need_more_kb=True,
             need_regenerate_subq=False,
             external_data=[],
+            novelty_test=False,
+            loop_counter=0,
         )
         
-        # 建立 LangGraph 流程
+        # 建立 LangGraph 流程時加入 checkpointer
         self._setup_graph()
 
     def _setup_graph(self) -> None:
@@ -146,33 +165,50 @@ class CuriousityAgentPipeline(AgentPipeline):
         graph_builder.add_conditional_edges(
             "novelty_evaluator_node",
             is_subquestion_novel,
-            {"regenerate_subq": "curiosity_node", "end": "web_search_node"},
+            {
+                "regenerate_subq": "curiosity_node", 
+                "end": "web_search_node"
+            },
         )
         graph_builder.add_edge("web_search_node", "knowledge_ingestion_node")
         graph_builder.add_conditional_edges(
             "knowledge_ingestion_node", route_knowledge_ingestion, {END: END}
         )
 
-        # 編譯圖並設定 checkpoint
-        self.graph = graph_builder.compile(checkpointer=self.memory_saver)
+        # 正確的編譯方式
+        self.graph = graph_builder.compile(
+            checkpointer=self.memory_saver,
+        )
 
     def get_current_state(self) -> AppState:
         """取得目前的 pipeline state。"""
         return self.state
 
-    def run(self, initial_input: Any) -> AppState:
-        """
-        執行 pipeline 流程。
+    def run(self, initial_input: AppState) -> dict:
+        """執行 pipeline 並返回完整狀態歷史"""
+        try:
+            result = self.graph.invoke(
+                self.state,
+                config={
+                    "recursion_limit": 10,
+                    "configurable": {"thread_id": initial_input["thread_id"]}
+                }
+            )
+            return {
+                "final_state": result,
+                "checkpoints": self._get_checkpoints(initial_input["thread_id"])
+            }
+        except GraphRecursionError:
+            return {
+                "error": "Recursion limit reached",
+                "checkpoints": self._get_checkpoints(initial_input["thread_id"])
+            }
 
-        Args:
-            initial_input (Any): 進入管線的第一個訊息或資料。
-
-        Returns:
-            AppState: 執行完成後的狀態。
-        """
-        self.state["messages"].append(initial_input)
-        result_state = self.graph.invoke(self.state)
-        return result_state
+    def _get_checkpoints(self, thread_id: str) -> list:
+        """獲取所有檢查點"""
+        return self.memory_saver.list(
+            config={"configurable": {"thread_id": thread_id}}
+        )
 
     def get_config(self) -> dict[str, Any]:
         """回傳管線設定資訊，可根據需要增加字段。"""
@@ -185,3 +221,128 @@ class CuriousityAgentPipeline(AgentPipeline):
 
 # 編譯流程圖
 graph = CuriousityAgentPipeline().graph
+
+if __name__ == "__main__":
+    import random
+    from faker import Faker
+    
+    fake = Faker()
+    
+    def generate_random_appstate() -> AppState:
+        """Generate a simple random AppState with Faker-enhanced data"""
+        return AppState(
+            thread_id=f"thread_{fake.uuid4()}",
+            messages=[
+                HumanMessage(
+                    content=fake.sentence(),
+                    name=fake.user_name(),
+                ) for _ in range(random.randint(1, 2))
+            ],
+            question=fake.catch_phrase(),
+            knowledge_chunks=[
+                fake.paragraph(nb_sentences=5) 
+                for _ in range(random.randint(1, 3))
+            ],
+            query_needed=random.choice([True, False]),
+            subquestions=[
+                f"{fake.random_element(('How','Why','What'))} {fake.word()} works?"
+                for _ in range(random.randint(0, 2))
+            ],
+            answer_text=fake.paragraph(nb_sentences=3) if random.random() > 0.5 else "",
+            db_sql_logs=[
+                f"SELECT * FROM {fake.bothify(text='table_????')} "
+                f"WHERE created_at > '{fake.date_this_decade()}'"
+                for _ in range(random.randint(0, 2))
+            ],
+            need_more_kb=random.choice([True, False]),
+            need_regenerate_subq=random.choice([True, False]),
+            external_data=[
+                f"{fake.uri()}?query={fake.word()}"
+                for _ in range(random.randint(0, 2))
+            ],
+            novelty_test=random.choice([True, False]),
+            loop_counter=0,
+        )
+    
+    # Test the pipeline with random state
+    pipeline = CuriousityAgentPipeline()
+    random_state = generate_random_appstate()
+    print("Generated AppState:", random_state)
+    result = pipeline.run(random_state)
+    print("\nPipeline Result:", result)
+    checkpoints = list(result["checkpoints"]) # 把這個物件拿來玩
+    
+    def track_state_changes(checkpoints):
+        """Track changes between states, focusing on messages and node execution"""
+        from difflib import Differ
+        differ = Differ()
+
+        if not checkpoints:
+            print("No checkpoints to analyze")
+            return
+        
+        prev_state = None
+        for idx, cp in enumerate(checkpoints):
+            current_state = cp.checkpoint['channel_values']
+            
+            # Initial state
+            if prev_state is None:
+                print(f"\n=== Initial State (Step {idx}) ===")
+                if current_state.get('messages'):
+                    print(f"Initial Message: {current_state['messages'][0].content}")
+                active_nodes = [k for k in current_state.keys() if ':' not in k and '_node' in k]
+                if active_nodes:
+                    print(f"Active Node: {active_nodes[0]}")
+                print("-" * 80)
+                prev_state = current_state
+                continue
+            
+            # Compare states
+            print(f"\n=== Step {idx} Changes ===")
+            
+            # 1. Message Changes with difflib
+            curr_msgs = [msg.content for msg in current_state.get('messages', [])]
+            prev_msgs = [msg.content for msg in prev_state.get('messages', [])]
+            
+            if curr_msgs != prev_msgs:
+                print("\nMessage Changes:")
+                diff = list(differ.compare(prev_msgs, curr_msgs))
+                for line in diff:
+                    if line.startswith(('+ ', '- ')):
+                        # Truncate long messages
+                        message = line[:100] + '...' if len(line) > 100 else line
+                        # Color code: green for additions, red for removals
+                        if line.startswith('+'):
+                            print(f"\033[92m{message}\033[0m")  # Green
+                        else:
+                            print(f"\033[91m{message}\033[0m")  # Red
+            
+            # 2. Node Execution
+            curr_nodes = {k: v for k, v in current_state.items() 
+                         if ':' not in k and '_node' in k}
+            prev_nodes = {k: v for k, v in prev_state.items() 
+                         if ':' not in k and '_node' in k}
+            
+            new_nodes = set(curr_nodes.keys()) - set(prev_nodes.keys())
+            removed_nodes = set(prev_nodes.keys()) - set(curr_nodes.keys())
+            
+            if new_nodes or removed_nodes:
+                print("\nNode Changes:")
+                for node in new_nodes:
+                    print(f"\033[92m+ {node}\033[0m")  # Green for new nodes
+                for node in removed_nodes:
+                    print(f"\033[91m- {node}\033[0m")  # Red for removed nodes
+            
+            # 3. Branch Decisions
+            branches = {k: v for k, v in current_state.items() 
+                       if k.startswith('branch:')}
+            if branches:
+                print("\nBranch Decisions:")
+                for branch, target in branches.items():
+                    print(f"• {branch.split(':')[-2]} → {target}")
+            
+            print("-" * 80)
+            prev_state = current_state
+    
+    track_state_changes(checkpoints)
+    
