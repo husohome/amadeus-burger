@@ -16,7 +16,16 @@ dependencies = [
     "networkx>=3.2",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
+    "neo4j",
+    "langchain-openai",
+    "langchain-core",
+    "langchain-anthropic",
+    "langchain-community",
+    "langchain-experimental",
+    "faker>=24.8.0",
+    "rich>=13.7.1"
 ]
+
 
 [build-system]
 requires = ["hatchling"]
@@ -29,4 +38,11 @@ addopts = "-ra -q"
 
 [tool.ruff]
 line-length = 88
-target-version = "py312" 
+target-version = "py312"
+
+[tool.poetry.dependencies]
+faker = "^24.8.0"
+python = "^3.9"
+langgraph = "^0.0.34"
+langchain-core = "^0.2.0"
+rich = "^13.7.1" 
