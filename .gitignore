@@ -49,3 +49,5 @@ ENV/
 htmlcov/
 .pytest_cache/
 .tox/
+
+Pipfile

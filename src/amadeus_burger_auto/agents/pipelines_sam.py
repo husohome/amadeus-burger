@@ -1,7 +1,12 @@
 import json
-from typing import TypedDict, Annotated, Sequence, Literal
+import logging
+import os
 from functools import lru_cache
+from typing import TypedDict, Annotated, Sequence, Literal, Any, Dict, List
 
+from neo4j import GraphDatabase
+from dotenv import load_dotenv
+from pydantic import BaseModel
 from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage
 from langgraph.prebuilt import ToolNode
@@ -9,35 +14,44 @@ from langgraph.graph import StateGraph, END, add_messages
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
-# =============================================================================
-# Prompt 定義區（集中管理所有提示信息）
-# =============================================================================
+# 設定日誌輸出
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# 系統提示，告知 LLM 可用工具並要求生成拆解主問題與跨領域子問題的回答
+# 載入 .env 檔案
+load_dotenv()
+
+# 環境變數設定
+NEO4J_URI = os.getenv("NEO4J_URI")
+NEO4J_USER = os.getenv("NEO4J_USER")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# 初始化 Neo4j driver
+neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+
+# 常數提示語
 SYSTEM_PROMPT = (
     "你是一個跨領域且充滿創新思維的智能助手。你可以使用以下工具：\n"
-    "你產出的思考與子問題，都必須要充滿新奇性，我會檢查你的新奇性，若不夠，你會需要重新產生。"
-    "1. query_neo4j ： 用於查詢 neo4J 資料庫；\n"
-    "2. query_web ： 用於查詢網路上的資料；\n"
+    "你有著無盡的好奇心，想要在回答問題時，可以盡可能的考慮所有面向。"
     "當你接到問題時，請先仔細拆解主問題，列出所有需要進一步查詢的子問題，"
-    "請先嘗試呼叫 query_neo4j 來查詢當前資料庫，若沒有資料再嘗試使用 query_web"
-    "如果你覺得已經可以回答了，就拋出END"
+    "請先嘗試呼叫 query_neo4j 來查詢當前資料庫，若沒有資料再嘗試使用 query_web。"
+    "再呼叫query_web後，我會進行新奇性評估，如果評估失敗，會要求你重新生成子問題。"
+    "如果你覺得目前的知識已經可以回答問題，就拋出END。"
 )
 
-# 網路查詢輔助系統提示
 WEB_ASSISTANT_PROMPT = (
     "You are an artificial intelligence assistant and you need to engage in a helpful, detailed, "
     "and polite conversation with a user."
 )
 
-# 新奇性評估提示模板，要求回覆 pass 或 fail
 NOVELTY_PROMPT_TEMPLATE = (
     "你是一位專業的新奇性評估專家，請從跨領域和創新角度評估以下查詢問題的新奇性：\n"
     "問題：\"{question}\"\n"
     "請僅回覆 'pass' 表示這個問題具有足夠的新奇性，或回覆 'fail' 表示不夠新奇。"
 )
 
-# 當新奇性評估不通過時，重新生成子問題的提示模板
 NOVELTY_FAIL_PROMPT_TEMPLATE = (
     "你先前生成的子問題如下：\n{original_subproblems}\n"
     "這些子問題未通過新奇性評估，原因可能是：{reasons}。\n"
@@ -45,136 +59,183 @@ NOVELTY_FAIL_PROMPT_TEMPLATE = (
 )
 
 # =============================================================================
-# 工具定義區
+# 工具與查詢函式
 # =============================================================================
-
-# 1. 查詢 neo4j 工具
-from neo4j import GraphDatabase
-
-# 設定 neo4j 連線參數（根據實際環境修改）
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "your_password_here"
-
-# 建立全域 neo4j 驅動連線
-neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 @tool
 def query_neo4j(query: str) -> str:
     """
-    查詢 neo4j 資料庫工具。
+    查詢 Neo4j 資料庫的工具。
 
-    此函數接收一段 Cypher 查詢語法，並連線至 neo4j 資料庫執行查詢，
-    將結果以描述性字串返回。如果查詢發生錯誤，則返回錯誤提示。
+    參數:
+        query (str): Cypher 查詢語句。
 
-    Args:
-        query (str): 傳入的 Cypher 查詢語法。
-
-    Returns:
-        str: 查詢結果描述或錯誤提示。
+    返回:
+        str: 查詢結果的 JSON 字串，若發生錯誤則回傳錯誤訊息。
     """
+    return f"Neo4J 查詢結果：資料庫無資料 查詢query: {query}"
     try:
-        return f"Neo4J 查詢結果：資料庫無資料 查詢query: {query}"
         with neo4j_driver.session() as session:
             result = session.run(query)
             records = [record.data() for record in result]
-        return f"Neo4J 查詢結果：{records}"
+        logger.info("Neo4j 查詢成功")
+        return json.dumps(records, ensure_ascii=False)
     except Exception as e:
-        return f"執行 neo4J 查詢時發生錯誤：{str(e)}"
+        logger.error(f"Neo4j 查詢失敗: {e}")
+        return json.dumps({"error": f"Neo4J 查詢失敗: {str(e)}"}, ensure_ascii=False)
 
-# 2. 查詢網路工具
+
 @tool
 def query_web(question: str) -> str:
     """
-    查詢網路工具。
+    查詢網路資料，並將結果存入 Neo4J。
 
-    利用 OpenAI API（基於 perplexity.ai）進行網路查詢，
-    傳入查詢問題並返回網路搜尋結果的描述字串。
+    流程：
+      1. 進行新奇性評估，若評估不通過則回傳錯誤。
+      2. 若新奇性通過，則使用 Perplexity API 進行查詢。
+      3. 解析返回的內容，提取有用的知識節點。
+      4. 將知識節點存入 Neo4J。
 
-    Args:
-        question (str): 用戶輸入的查詢問題。
+    參數:
+        question (str): 用戶查詢的問題。
 
-    Returns:
-        str: 網路查詢結果描述或錯誤提示。
+    返回:
+        str: JSON 格式的結果，包含成功或錯誤訊息。
     """
-    YOUR_API_KEY = "INSERT_API_KEY_HERE"  # 請替換為你自己的 API 金鑰
-    client = OpenAI(api_key=YOUR_API_KEY, base_url="https://api.perplexity.ai")
+    # return json.dumps({"message": "知識已存入 Neo4J (mock)"}, ensure_ascii=False)
+    return json.dumps({"fail": "Novelty Check fail.", "reason": "新奇性評估不通過，請重新生成，再嘗試一次query_web"}, ensure_ascii=False)
+    # 進行新奇性評估
+    novelty_result = evaluate_novelty(question)
+    novelty_data = json.loads(novelty_result)
+    if novelty_data.get("decision") == "fail":
+        logger.info("新奇性評估不通過")
+        return json.dumps({"fail": "Novelty Check fail.", "reason": novelty_data.get("reason", "未知原因")}, ensure_ascii=False)
+
+    client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai")
     messages = [
         {"role": "system", "content": WEB_ASSISTANT_PROMPT},
         {"role": "user", "content": question},
     ]
+
     try:
         response = client.chat.completions.create(
             model="sonar-pro",
             messages=messages,
         )
-        result = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return f"網路搜尋結果：{result}"
+        result_content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        extracted_knowledge = extract_knowledge(result_content)
+        store_knowledge_in_neo4j(extracted_knowledge)
+        logger.info("知識已成功存入 Neo4j")
+        return json.dumps({"message": "知識已存入 Neo4J"}, ensure_ascii=False)
     except Exception as e:
-        return f"執行網路查詢時發生錯誤：{str(e)}"
+        logger.error(f"網路查詢失敗: {e}")
+        return json.dumps({"error": f"網路查詢失敗: {str(e)}"}, ensure_ascii=False)
 
-# 3. 新奇性評估工具
-@tool
+
+def extract_knowledge(text: str) -> Dict[str, Any]:
+    """
+    從查詢結果中提取知識節點，轉換為可存入 Neo4J 的格式。
+
+    參數:
+        text (str): 查詢返回的原始文本內容。
+
+    返回:
+        dict: 包含 'nodes' 與 'relationships' 的字典。
+    """
+    messages = [
+        {"role": "system", "content": "你是一個知識提取助手，請將輸入的文本拆解成結構化的知識。"},
+        {"role": "user", "content": f"請從以下內容中提取知識節點，並以 JSON 格式輸出：\n{text}"}
+    ]
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    class Neo4J(BaseModel):
+        nodes: List[Dict[str, Any]]
+        relationships: List[Dict[str, Any]]
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+        )
+        extracted_data = response.choices[0].message.content
+        # 使用 json.loads 替代 eval 來解析 JSON 格式的字串
+        knowledge_graph = json.loads(extracted_data)
+        logger.info("知識提取成功")
+        return knowledge_graph
+    except Exception as e:
+        logger.error(f"提取知識時發生錯誤：{e}")
+        return {"nodes": [], "relationships": []}
+
+
+def store_knowledge_in_neo4j(knowledge_graph: Dict[str, Any]):
+    """
+    將解析出的知識節點和關係存入 Neo4j。
+
+    參數:
+        knowledge_graph (dict): 包含 'nodes' 與 'relationships' 的字典。
+    """
+    nodes = knowledge_graph.get("nodes", [])
+    relationships = knowledge_graph.get("relationships", [])
+
+    with neo4j_driver.session() as session:
+        # 插入節點
+        for node in nodes:
+            node_label = node.get("label", "Knowledge")
+            node_id = node.get("id", "")
+            properties = node.get("properties", {})
+
+            query = f"""
+            MERGE (n:{node_label} {{id: $id}})
+            SET n += $properties
+            """
+            try:
+                session.run(query, id=node_id, properties=properties)
+            except Exception as e:
+                logger.error(f"插入節點失敗: {e}")
+
+        # 插入關係
+        for rel in relationships:
+            start_id = rel.get("start_id", "")
+            end_id = rel.get("end_id", "")
+            rel_type = rel.get("type", "RELATED_TO")
+            properties = rel.get("properties", {})
+
+            query = f"""
+            MATCH (a {{id: $start_id}}), (b {{id: $end_id}})
+            MERGE (a)-[r:{rel_type}]->(b)
+            SET r += $properties
+            """
+            try:
+                session.run(query, start_id=start_id, end_id=end_id, properties=properties)
+            except Exception as e:
+                logger.error(f"插入關係失敗: {e}")
+
+
 def evaluate_novelty(question: str) -> str:
     """
-    新奇性評估工具。
+    進行新奇性評估，確保查詢的問題具有足夠的新奇性。
 
-    根據傳入的查詢問題，利用 LLM 模型（gpt-4o-mini）對問題進行新奇性評估，
-    並要求模型僅返回 JSON 格式的結果，如 {"decision": "pass"} 或 {"decision": "fail", "reason": "原因"}。
-    如果解析失敗，則返回失敗的 JSON 格式。
+    參數:
+        question (str): 需要評估的新奇性問題。
 
-    Args:
-        question (str): 待評估的新奇性查詢問題。
-
-    Returns:
-        str: JSON 格式字串，包含 "decision" 與（在失敗時） "reason"。
+    返回:
+        str: 包含 "decision": "pass" 或 "decision": "fail" 的 JSON 字串。
     """
-    prompt = NOVELTY_PROMPT_TEMPLATE.format(question=question) + \
-             "\n請以 JSON 格式回覆，例如：{\"decision\": \"pass\"} 或 {\"decision\": \"fail\", \"reason\": \"問題過於平凡\"}"
-    judge = ChatOpenAI(temperature=0, model_name="gpt-4o-mini")
-    response = judge.invoke([{"role": "system", "content": prompt}])
-    output = response.content.strip()
+    prompt = f'請評估以下問題的新奇性: "{question}"。 回覆格式: {{"decision": "pass"}} 或 {{"decision": "fail", "reason": "原因"}}'
     try:
-        result = json.loads(output)
-        if "decision" not in result or result["decision"] not in ["pass", "fail"]:
-            return json.dumps({"decision": "fail", "reason": "無法解析決策"})
-        return json.dumps(result)
+        client = ChatOpenAI(api_key=OPENAI_API_KEY, model_name="gpt-4o-mini")
+        response = client.invoke([{"role": "system", "content": prompt}])
+        # 假設 response.content 為 JSON 格式字串
+        result = json.loads(response.content)
+        logger.info("新奇性評估成功")
+        return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"decision": "fail", "reason": f"解析 JSON 失敗：{str(e)}"})
-
-# 4. 重新生成子問題工具
-@tool
-def regenerate_subproblems(original_subproblems: str, reason: str) -> str:
-    """
-    重新生成子問題工具。
-
-    當新奇性評估不通過時，此工具根據原先生成的子問題及失敗原因，
-    呼叫 LLM 模型生成一組更具新奇性且跨領域的子問題，
-    並返回新的子問題列表（純文本格式）。
-
-    Args:
-        original_subproblems (str): 原先生成的子問題內容。
-        reason (str): 新奇性評估失敗的原因。
-
-    Returns:
-        str: 重新生成的新奇性子問題列表（文本格式）。
-    """
-    prompt = NOVELTY_FAIL_PROMPT_TEMPLATE.format(
-        original_subproblems=original_subproblems,
-        reasons=reason
-    )
-    judge = ChatOpenAI(temperature=0, model_name="gpt-4o-mini")
-    response = judge.invoke([{"role": "system", "content": prompt}])
-    return response.content.strip()
-
-# 建立工具節點，將各工具包裝成 ToolNode
-neo4j_tool_node = ToolNode([query_neo4j])
-web_tool_node = ToolNode([query_web])
-novelty_tool_node = ToolNode([evaluate_novelty])
-regenerate_tool_node = ToolNode([regenerate_subproblems])
+        logger.error(f"新奇性評估失敗: {e}")
+        return json.dumps({"decision": "fail", "reason": "新奇性評估失敗"}, ensure_ascii=False)
+    
 
 # =============================================================================
-# 模型與狀態相關設置
+# 狀態機與決策流程
 # =============================================================================
 
 @lru_cache(maxsize=4)
@@ -195,23 +256,20 @@ def _get_model(model_name: str):
         model = ChatOpenAI(temperature=0, model_name="gpt-4o-mini")
     else:
         raise ValueError(f"Unsupported model type: {model_name}")
-    model = model.bind_tools([query_neo4j, query_web, evaluate_novelty])
+    model = model.bind_tools([query_neo4j, query_web])
     return model
 
 class AgentState(TypedDict):
     """
-    Agent 狀態類型。
+    Agent 的狀態類型，包含對話訊息列表。
 
     Attributes:
-        messages: 輸入與輸出的 BaseMessage 列表，並使用 add_messages 管理。
+        messages: 儲存對話歷史與工具調用資訊。
     """
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
-# =============================================================================
-# 節點函式定義
-# =============================================================================
 
-def call_model(state: AgentState, config: dict) -> AgentState:
+def agent(state: AgentState, config: dict) -> AgentState:
     """
     呼叫 LLM 模型生成初步查詢問題。
 
@@ -230,7 +288,30 @@ def call_model(state: AgentState, config: dict) -> AgentState:
     model_name = config.get('configurable', {}).get("model_name", "openai")
     model = _get_model(model_name)
     response = model.invoke(new_messages)
+    print("response:", response)
     return {"messages": [response]}
+
+
+def choose_tool(state: AgentState) -> Literal["neo4j", "web"]:
+    """
+    根據對話內容選擇要使用的工具。
+
+    參數:
+        state (AgentState): 當前對話狀態。
+
+    返回:
+        Literal["neo4j", "web"]: 決定使用哪個工具。
+    """
+    messages = state["messages"]
+    last_message = messages[-1]
+    tool_calls = getattr(last_message, "tool_calls", None)
+    if tool_calls:
+        for call in tool_calls:
+            if call.get("name", "").lower() == "query_neo4j":
+                return "neo4j"
+            elif call.get("name", "").lower() == "query_web":
+                return "web"
+    return "web"
 
 
 def regenerate(state: AgentState, config: dict) -> AgentState:
@@ -238,156 +319,72 @@ def regenerate(state: AgentState, config: dict) -> AgentState:
     當新奇性評估不通過時，根據原先子問題及失敗原因重新生成更具新奇性的子問題，
     並將結果追加至狀態訊息中。
 
-    從狀態中取出倒數第二則訊息作為原先子問題，最後一則訊息為新奇性評估結果，
-    調用重新生成子問題工具並將結果包裝成新的 BaseMessage。
-
-    Args:
+    參數:
         state (AgentState): 當前狀態。
         config (dict): 節點配置（此處未使用）。
 
-    Returns:
+    返回:
         AgentState: 更新後的狀態，包含原有訊息及新追加的重新生成子問題訊息。
     """
+    return {"messages": ["這是模擬的新奇性子問題 (mock)"]}
     original_subproblems = state["messages"][-2].content
     try:
         novelty_result = json.loads(state["messages"][-1].content.strip())
         reason = novelty_result.get("reason", "未知原因")
     except Exception:
         reason = "未知原因"
-    result = regenerate_tool_node.invoke(original_subproblems, reason)
-    new_msg = BaseMessage(role="system", content=result)
+    prompt = NOVELTY_FAIL_PROMPT_TEMPLATE.format(
+        original_subproblems=original_subproblems,
+        reasons=reason
+    )
+    judge = ChatOpenAI(temperature=0, model_name="gpt-4o-mini")
+    response = judge.invoke([{"role": "system", "content": prompt}])
+    new_msg = BaseMessage(role="system", content=response.content.strip())
     return {"messages": state["messages"] + [new_msg]}
 
-# =============================================================================
-# 決策函式定義
-# =============================================================================
-
-def choose_tool(state: AgentState) -> Literal["neo4j", "web"]:
-    """
-    根據訊息中 tool_calls 判斷使用哪個工具：
-      - 若在最近的訊息中有對 query_neo4j 的工具呼叫，則返回 "neo4j"
-      - 否則返回 "web"
-    """
-    # 逆向遍歷所有訊息，找出最近一次帶有 tool_calls 的訊息
-    for msg in reversed(state["messages"]):
-        tool_calls = getattr(msg, "tool_calls", None)
-        if tool_calls:
-            # 檢查是否有對 query_neo4j 的呼叫
-            for call in tool_calls:
-                if call.get("name", "").lower() == "query_neo4j":
-                    return "neo4j"
-            # 若有 tool_calls 但不包含 query_neo4j，則預設 web
-            return "web"
-    # 若完全沒有 tool_calls 記錄，則預設 web
-    return "web"
-
-
-def should_continue(state: AgentState) -> str:
-    """
-    判斷是否應繼續流程執行。
-
-    若狀態中已出現任一工具調用記錄，則返回 "end" 表示可以結束流程；
-    否則返回 "continue" 表示流程需要繼續。
-
-    Args:
-        state (AgentState): 當前狀態。
-
-    Returns:
-        str: "continue" 或 "end"。
-    """
-    if any(getattr(msg, "tool_calls", None) for msg in state["messages"]):
-        return "end"
-    return "continue"
 
 # =============================================================================
-# 模型配置類型定義
+# 建立工作流
 # =============================================================================
 
-class GraphConfig(TypedDict):
-    """
-    流程圖配置類型。
+workflow = StateGraph(AgentState)
 
-    Attributes:
-        model_name (Literal): 模型名稱，目前支援 "anthropic" 或 "openai"（此範例僅支持 "openai"）。
-    """
-    model_name: Literal["anthropic", "openai"]
+workflow.add_node("agent", agent)
+workflow.add_node("neo4j_action", ToolNode([query_neo4j]))
+workflow.add_node("web_action", ToolNode([query_web]))
+# workflow.add_node("regenerate", regenerate)
 
-# =============================================================================
-# 建立工作流流程
-# =============================================================================
-
-# 建立 StateGraph 實例，傳入 AgentState 類型與配置 schema
-workflow = StateGraph(AgentState, config_schema=GraphConfig)
-
-# 節點 "agent": 呼叫模型生成初步查詢問題（拆解主問題並生成子問題）
-workflow.add_node("agent", call_model)
-
-# 節點 "neo4j_action": 呼叫 neo4j 工具進行查詢
-workflow.add_node("neo4j_action", neo4j_tool_node)
-
-# 節點 "web_action": 呼叫網路查詢工具進行查詢
-workflow.add_node("web_action", web_tool_node)
-
-# 節點 "novelty_check": 呼叫新奇性評估工具進行查詢問題評估
-workflow.add_node("novelty_check", novelty_tool_node)
-
-# 節點 "regenerate": 當新奇性評估未通過時，重新生成子問題
-workflow.add_node("regenerate", regenerate)
-
-# 設定流程起點為 "agent"
 workflow.set_entry_point("agent")
 
-# 從 "agent" 節點開始，根據 choose_tool 函式的決策選擇工具路徑
 workflow.add_conditional_edges(
     "agent",
     choose_tool,
     {
         "neo4j": "neo4j_action",
-        "web": "novelty_check",
+        "web": "web_action",
     },
 )
 
-# 根據新奇性評估結果決定後續動作：
-# 若評估結果為 "pass" 則進入 "web_action"；若為 "fail" 則進入 "regenerate"
-workflow.add_conditional_edges(
-    "novelty_check",
-    novelty_tool_node,
-    {
-        "pass": "web_action",
-        "fail": "regenerate",
-    },
-)
-
-# 工具節點執行後，結果回傳至 "agent" 節點，讓模型根據更新訊息進一步生成回答
 workflow.add_edge("neo4j_action", "agent")
-workflow.add_edge("web_action", "agent")
-workflow.add_edge("regenerate", "agent")
 
-# 最後，在 "agent" 節點加入通用條件邊：若狀態中已有工具調用記錄則流程結束，
-# 否則返回 "agent" 以繼續執行
+
 workflow.add_conditional_edges(
     "agent",
-    should_continue,
+    lambda state: "end" if any(getattr(msg, "tool_calls", None) for msg in state["messages"]) else "continue",
     {
         "continue": "agent",
         "end": END,
     },
 )
 
-# 編譯工作流，得到可執行的工作流物件
+workflow.add_conditional_edges(
+    "web_action",
+    lambda state: "regenerate" if "fail" in state["messages"][-1].content else "end",
+    {
+        "regenerate": "agent",
+        "end": END,
+    },
+)
+
+print("what?")
 graph = workflow.compile()
-
-"""
-工作流說明：
-1. 節點 "agent" 呼叫模型生成初步查詢問題（拆解主問題並生成子問題），產生的訊息會作為後續工具查詢的依據。
-2. 從 "agent" 節點根據 choose_tool 函式的決策：
-   - 若訊息中包含 neo4j 關鍵字則進入 "neo4j_action" 節點呼叫 neo4j 工具；
-   - 否則先進入 "novelty_check" 節點進行新奇性評估。
-3. 在 "novelty_check" 節點：
-   - 若評估結果為 {"decision": "pass"}，則進入 "web_action" 節點呼叫網路查詢工具；
-   - 若評估結果為 {"decision": "fail", "reason": "<原因>"}，則進入 "regenerate" 節點，根據原先子問題及失敗原因重新生成更具新奇性的子問題。
-4. 工具查詢後，結果會回傳至 "agent" 節點，模型根據更新後的資訊繼續生成回答，
-   直到 should_continue 函式判定流程可以結束（已存在工具調用記錄）。
-"""
-
-# 現在 graph 即為組裝好的工作流，可供後續執行使用
